@@ -169,11 +169,8 @@ fill(plot(mdata.prediction), plot(mdata.smoothed), color=color.new(histogramColo
 plotcandle(mdata.prediction, mdata.prediction, mdata.smoothed, mdata.smoothed, color=color.new(histogramColor, 40), bordercolor=color.new(histogramColor, 20))
 
 // Prediction lines (optional)
-if showLines
-    plot(mdata.momentum1, title="Momentum 1", color=color.new(#efb906, 70), linewidth=2, editable=false)
-    plot(mdata.momentum2, title="Momentum 2", color=color.new(#08d3ed, 70), linewidth=2, editable=false)
-    plot(maxBand, title="Max Band", color=color.new(#08edda, 80), linewidth=1, editable=false)
-    plot(minBand, title="Min Band", color=color.new(#08edda, 80), linewidth=1, editable=false)
+plot(showLines ? mdata.momentum1 : na, title="Momentum 1", color=color.new(#efb906, 70), linewidth=2, editable=false)    plot(mdata.momentum2, title="Momentum 2", color=color.new(#08d3ed, 70), linewidth=2, editable=false)
+plot(showLines ? maxBand : na, title="Max Band", color=color.new(#08edda, 80), linewidth=1, editable=false)    plot(minBand, title="Min Band", color=color.new(#08edda, 80), linewidth=1, editable=false)
 
 // Arrow signals for big moves
 if showArrows
