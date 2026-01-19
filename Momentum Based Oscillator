@@ -6,15 +6,15 @@ indicator("MalloyAlgos: Momentum Based Oscillator [Optimized]", shorttitle="Mall
 // ═══════════════════════════════════════════════════════════════════════════════
 
 string core = "➞ ML Core Settings 🔸"
-int shortPeriod = input.int(26, "Short Period", 1, group=core)
-int longPeriod = input.int(14, "Long Period", 2, group=core)
-int smoothPeriod = input.int(13, "Smoothing Period", 2, group=core)
-int neighbourCount = math.floor(input.int(50, "Neighbours Count", 5, group=core))
+int shortPeriod = input.int(26, "Short Period", minval=1, group=core)
+int longPeriod = input.int(14, "Long Period", minval=2, group=core)
+int smoothPeriod = input.int(13, "Smoothing Period", minval=2, group=core)
+int neighbourCount = input.int(50, "Neighbours Count", minval=5, maxval=500, group=core)
 
 string arrow = "➞ Arrow Signals 🔸"
 bool showArrows = input.bool(true, "Show Prediction Arrows", group=arrow)
 bool showLines = input.bool(false, "Show ML Core Lines", group=arrow)
-int arrowSensitivity = input.int(3, "Arrow Sensitivity (1-5)", 1, 5, group=arrow)
+int arrowSensitivity = input.int(3, "Arrow Sensitivity (1-5)", minval=1, maxval=5, group=arrow)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -46,6 +46,8 @@ var float oscillatorMin = 0.0
 var float oscillatorMax = 0.0
 var float prevPrediction = 0.0
 var int prevDirection = 0
+var array<int> arrowLabels = array.new<int>()
+var int MAX_LABELS = 500
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // METHODS
@@ -53,8 +55,9 @@ var int prevDirection = 0
 
 // Calculate volatility bands for oscillator bounds
 method calculateBand(int len) =>
-    volatility = math.min(ta.atr(len) * 0.3, close * (0.3 / 100))
-    volatility[20] / 2
+    volatilityHigh = math.min(ta.atr(len) * 0.3, close * (0.3 / 100))
+    volatilitySmoothed = ta.sma(volatilityHigh, 20)
+    volatilitySmoothed / 2
 
 // Core momentum calculation: normalized momentum oscillator
 method calculateMomentum(int period, int smooth) =>
@@ -63,8 +66,8 @@ method calculateMomentum(int period, int smooth) =>
     momentum_smooth = ta.ema(momentum, smooth)
     absChange_smooth = ta.ema(absChange, smooth)
 
-    // Normalize to prevent extreme values
-    normalized = absChange_smooth != 0 ? 100 * (momentum_smooth / absChange_smooth) : 0
+    // Normalize to prevent extreme values (safer division)
+    normalized = absChange_smooth != 0 ? 100 * (momentum_smooth / absChange_smooth) : 0.0
     normalized
 
 // K-Nearest Neighbors distance calculation (optimized)
@@ -74,36 +77,53 @@ method distanceMetric(float m1_current, float m1_hist, float m2_current, float m
 
 // K-NN prediction with rolling window optimization
 method predictKnn(MachineLearning ml_data) =>
-    float minDist = -1e-6
-    maxSearchWindow = math.min(ml_data.direction.size(), neighbourCount * 3)  // Limit lookback
+    if ml_data.predictions.size() == 0
+        0.0
+    else
+        float minDist = math.max_int
+        maxSearchWindow = math.min(ml_data.direction.size(), neighbourCount * 3)
 
-    for i = 0 to maxSearchWindow - 1
-        idx = ml_data.direction.size() - 1 - i
-        if idx >= 0
-            dist = distanceMetric(mdata.momentum1, ml_data.momentum1.get(idx), 
-                                   mdata.momentum2, ml_data.momentum2.get(idx))
-            if dist > minDist
-                minDist := dist
-                if ml_data.predictions.size() >= neighbourCount
-                    ml_data.predictions.shift()
-                ml_data.predictions.push(ml_data.direction.get(idx))
+        for i = 0 to maxSearchWindow - 1
+            idx = ml_data.direction.size() - 1 - i
+            if idx >= 0
+                dist = distanceMetric(mdata.momentum1, ml_data.momentum1.get(idx), 
+                                    mdata.momentum2, ml_data.momentum2.get(idx))
+                if dist < minDist
+                    minDist := dist
+                    if ml_data.predictions.size() >= neighbourCount
+                        ml_data.predictions.shift()
+                    ml_data.predictions.push(ml_data.direction.get(idx))
 
-    // Return averaged prediction
-    ml_data.predictions.size() > 0 ? float(ml_data.predictions.sum() * 5) / float(ml_data.predictions.size()) : 0.0
+        // Return normalized average prediction (0-1 range)
+        predSize = ml_data.predictions.size()
+        if predSize > 0
+            float(ml_data.predictions.sum()) / float(predSize)
+        else
+            0.0
 
 // Detect potential big moves (arrows)
 method detectArrowSignal(float currentPred, float smoothedPred, int direction) =>
     arrow = 0
 
     // Bullish arrow: strong divergence + direction change
-    if currentPred > smoothedPred and currentPred > 0 and prevDirection <= 0 and math.abs(currentPred) > (oscillatorMax - oscillatorMin) * 0.3 / arrowSensitivity
+    oscillatorRange = math.abs(oscillatorMax - oscillatorMin)
+    threshold = oscillatorRange > 0 ? oscillatorRange * 0.3 / float(arrowSensitivity) : 0
+
+    if currentPred > smoothedPred and currentPred > 0 and prevDirection <= 0 and math.abs(currentPred) > threshold
         arrow := 1
 
     // Bearish arrow: strong divergence + direction change
-    if currentPred < smoothedPred and currentPred < 0 and prevDirection >= 0 and math.abs(currentPred) > (oscillatorMax - oscillatorMin) * 0.3 / arrowSensitivity
+    if currentPred < smoothedPred and currentPred < 0 and prevDirection >= 0 and math.abs(currentPred) > threshold
         arrow := -1
 
     arrow
+
+// Clean up old labels (prevent memory issues)
+method cleanupLabels() =>
+    if arrowLabels.size() > MAX_LABELS
+        for i = 0 to MAX_LABELS / 2
+            lbl = arrowLabels.shift()
+            label.delete(label(lbl))
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN CALCULATION LOOP
@@ -118,7 +138,7 @@ maxBand = mdata.momentum2 + mdata.band
 minBand = mdata.momentum2 - mdata.band
 
 // Direction classification: -1 (down), 0 (flat), 1 (up)
-direction = mdata.momentum1[2] < mdata.momentum1[0] ? -1 : mdata.momentum1[2] > mdata.momentum1[0] ? 1 : 0
+direction = mdata.momentum1 > mdata.momentum1[1] ? 1 : mdata.momentum1 < mdata.momentum1[1] ? -1 : 0
 
 // Update ML data arrays (only keep relevant history to optimize)
 if ml.direction.size() > neighbourCount * 5
@@ -133,20 +153,29 @@ ml.direction.push(direction)
 // Perform K-NN prediction
 mdata.prediction := predictKnn(ml)
 mdata.smoothed := ta.sma(mdata.prediction, smoothPeriod)
-ml.smoothedPreds.push(mdata.smoothed)
 
-// Update oscillator bounds (rolling min/max)
-oscillatorMin := ml.smoothedPreds.min()
-oscillatorMax := ml.smoothedPreds.max()
+if ml.smoothedPreds.size() <= 500
+    ml.smoothedPreds.push(mdata.smoothed)
+else
+    ml.smoothedPreds.shift()
+    ml.smoothedPreds.push(mdata.smoothed)
+
+// Update oscillator bounds safely
+minVal = ml.smoothedPreds.size() > 0 ? ml.smoothedPreds.min() : 0.0
+maxVal = ml.smoothedPreds.size() > 0 ? ml.smoothedPreds.max() : 0.0
+
+oscillatorMin := minVal
+oscillatorMax := maxVal
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ARROW DETECTION
+// ARROW DETECTION & CLEANUP
 // ═══════════════════════════════════════════════════════════════════════════════
 
 arrowSignal = detectArrowSignal(mdata.prediction, mdata.smoothed, direction)
+cleanupLabels()
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COLORING & VISUALIZATION
+// PLOTTING & VISUALIZATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Gradient colors
@@ -155,29 +184,32 @@ bearishColor = color.from_gradient(mdata.prediction, oscillatorMin, oscillatorMa
 histogramColor = mdata.prediction > mdata.smoothed ? bullishColor : bearishColor
 
 // Plot main indicators
-plot(mdata.prediction, title="Prediction", color=color.new(color.white, 40), linewidth=1, editable=false)
-plot(mdata.smoothed, title="Smoothed", color=color.new(color.yellow, 20), linewidth=2, editable=false)
+p1 = plot(mdata.prediction, title="Prediction", color=color.new(color.white, 40), linewidth=1, editable=false)
+p2 = plot(mdata.smoothed, title="Smoothed", color=color.new(color.yellow, 20), linewidth=2, editable=false)
 
 // Plot bands
 plot(oscillatorMax, title="Upper Band", color=color.new(color.white, 80), linewidth=1)
 plot(oscillatorMin, title="Lower Band", color=color.new(color.white, 80), linewidth=1)
 
-// Fill
-fill(plot(mdata.prediction), plot(mdata.smoothed), color=color.new(histogramColor, 30))
-
-// Candle visualization
-plotcandle(mdata.prediction, mdata.prediction, mdata.smoothed, mdata.smoothed, color=color.new(histogramColor, 40), bordercolor=color.new(histogramColor, 20))
+// Fill between prediction and smoothed
+fill(p1, p2, color=color.new(histogramColor, 30))
 
 // Prediction lines (optional)
-plot(showLines ? mdata.momentum1 : na, title="Momentum 1", color=color.new(#efb906, 70), linewidth=2, editable=false)    plot(mdata.momentum2, title="Momentum 2", color=color.new(#08d3ed, 70), linewidth=2, editable=false)
-plot(showLines ? maxBand : na, title="Max Band", color=color.new(#08edda, 80), linewidth=1, editable=false)    plot(minBand, title="Min Band", color=color.new(#08edda, 80), linewidth=1, editable=false)
+plot(showLines ? mdata.momentum1 : na, title="Momentum 1", color=color.new(#efb906, 70), linewidth=2, editable=false)
+plot(showLines ? mdata.momentum2 : na, title="Momentum 2", color=color.new(#08d3ed, 70), linewidth=2, editable=false)
+plot(showLines ? maxBand : na, title="Max Band", color=color.new(#08edda, 80), linewidth=1, editable=false)
+plot(showLines ? minBand : na, title="Min Band", color=color.new(#08edda, 80), linewidth=1, editable=false)
 
 // Arrow signals for big moves
 if showArrows
     if arrowSignal == 1
-        label.new(bar_index, oscillatorMin - (oscillatorMax - oscillatorMin) * 0.1, "▲", yloc=yloc.absolute, color=color.new(color.green, 0), textcolor=color.green, size=size.large, style=label.style_none)
+        arrowY = oscillatorMin - (oscillatorMax - oscillatorMin) * 0.1
+        lbl = label.new(bar_index, arrowY, "▲", yloc=yloc.absolute, color=color.new(color.green, 0), textcolor=color.green, size=size.large, style=label.style_none)
+        arrowLabels.push(lbl.get_id())
     else if arrowSignal == -1
-        label.new(bar_index, oscillatorMax + (oscillatorMax - oscillatorMin) * 0.1, "▼", yloc=yloc.absolute, color=color.new(color.red, 0), textcolor=color.red, size=size.large, style=label.style_none)
+        arrowY = oscillatorMax + (oscillatorMax - oscillatorMin) * 0.1
+        lbl = label.new(bar_index, arrowY, "▼", yloc=yloc.absolute, color=color.new(color.red, 0), textcolor=color.red, size=size.large, style=label.style_none)
+        arrowLabels.push(lbl.get_id())
 
 // Update for next iteration
 prevPrediction := mdata.prediction
